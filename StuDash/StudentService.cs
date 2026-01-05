@@ -1,80 +1,119 @@
-﻿using System;
+﻿using Microsoft.EntityFrameworkCore;
+using StuDash;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace StuDash
 {
-    internal class StudentService
+    public class StudentService : IDisposable
     {
-        private List<Student> _students;
-        private readonly string _dataFilePath;
-        private int _nextId;
+        private readonly SchoolDbContext _context;
 
+        // Constructor - creates database connection
         public StudentService()
         {
-            _students = new List<Student>();
-            // Save data to the application's directory
-            _dataFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                                        "StudentManagementSystem", "students.json");
-
-            // Ensure directory exists
-            Directory.CreateDirectory(Path.GetDirectoryName(_dataFilePath));
-
-            LoadData();
+            _context = new SchoolDbContext();
+            
+            // Ensure database exists
+            try
+            {
+                _context.Database.EnsureCreated();
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException("Failed to connect to database. " +
+                    "Please ensure SQL Server is running.", ex);
+            }
         }
 
         #region CRUD Operations
 
         /// <summary>
-        /// Get all students
+        /// Get all students from database
         /// </summary>
         public List<Student> GetAllStudents()
         {
-            return _students.ToList(); // Return a copy to prevent external modification
+            try
+            {
+                // ToList() executes the query and returns results
+                return _context.Students
+                    .OrderBy(s => s.StudentID)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to retrieve students: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
-        /// Get student by ID
+        /// Get student by internal ID
         /// </summary>
-        public Student GetStudentById(int id)
+        public Student? GetStudentById(int id)
         {
-            return _students.FirstOrDefault(s => s.ID == id);
+            try
+            {
+                // Find() is optimized for primary key lookups
+                return _context.Students.Find(id);
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to retrieve student: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
-        /// Get student by Student ID
+        /// Get student by Student ID (e.g., FOE.41.008.140.22)
         /// </summary>
-        public Student GetStudentByStudentId(string studentId)
+        public Student? GetStudentByStudentId(string studentId)
         {
-            return _students.FirstOrDefault(s => s.StudentID.Equals(studentId, StringComparison.OrdinalIgnoreCase));
+            try
+            {
+                return _context.Students
+                    .FirstOrDefault(s => s.StudentID == studentId);
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to retrieve student: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
-        /// Add a new student
+        /// Add a new student to database
         /// </summary>
         public bool AddStudent(Student student)
         {
             try
             {
-                // Check if Student ID already exists
+                // Validation: Check for duplicate Student ID
                 if (GetStudentByStudentId(student.StudentID) != null)
                 {
                     throw new ArgumentException($"Student ID '{student.StudentID}' already exists.");
                 }
 
-                // Assign new ID
-                student.ID = _nextId++;
+                // Validation: Ensure required fields
+                if (!student.IsValid())
+                {
+                    throw new ArgumentException("Student data is incomplete or invalid.");
+                }
 
-                // Add to list
-                _students.Add(student);
+                // Set audit fields
+                student.CreatedDate = DateTime.Now;
+                // TODO: Set CreatedBy from current logged-in user
 
-                // Save to file
-                SaveData();
+                // Add to context (tracked by EF Core)
+                _context.Students.Add(student);
 
-                return true;
+                // Save to database
+                int rowsAffected = _context.SaveChanges();
+
+                return rowsAffected > 0;
+            }
+            catch (DbUpdateException dbEx)
+            {
+                // Database-specific errors (constraint violations, etc.)
+                throw new ApplicationException($"Database error adding student: {dbEx.InnerException?.Message ?? dbEx.Message}", dbEx);
             }
             catch (Exception ex)
             {
@@ -89,13 +128,14 @@ namespace StuDash
         {
             try
             {
+                // Find existing student in database
                 var existingStudent = GetStudentById(updatedStudent.ID);
                 if (existingStudent == null)
                 {
                     throw new ArgumentException($"Student with ID {updatedStudent.ID} not found.");
                 }
 
-                // Check if new StudentID conflicts with another student
+                // Check for StudentID conflicts with other students
                 var studentWithSameId = GetStudentByStudentId(updatedStudent.StudentID);
                 if (studentWithSameId != null && studentWithSameId.ID != updatedStudent.ID)
                 {
@@ -109,17 +149,34 @@ namespace StuDash
                 existingStudent.Email = updatedStudent.Email;
                 existingStudent.PhoneNumber = updatedStudent.PhoneNumber;
                 existingStudent.DateOfBirth = updatedStudent.DateOfBirth;
-                existingStudent.Course = updatedStudent.Course;
                 existingStudent.Faculty = updatedStudent.Faculty;
                 existingStudent.Department = updatedStudent.Department;
+                existingStudent.Course = updatedStudent.Course;
                 existingStudent.YearLevel = updatedStudent.YearLevel;
                 existingStudent.CWA = updatedStudent.CWA;
                 existingStudent.EnrollmentDate = updatedStudent.EnrollmentDate;
+                existingStudent.Status = updatedStudent.Status;
+                
+                // Audit fields are automatically updated by DbContext.SaveChanges()
+                existingStudent.ModifiedDate = DateTime.Now;
+                // TODO: Set ModifiedBy from current logged-in user
 
-                // Save to file
-                SaveData();
+                // Mark as modified (EF Core tracks this automatically, but being explicit)
+                _context.Entry(existingStudent).State = EntityState.Modified;
 
-                return true;
+                // Save changes
+                int rowsAffected = _context.SaveChanges();
+
+                return rowsAffected > 0;
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another user modified this record
+                throw new ApplicationException("This student record was modified by another user. Please refresh and try again.");
+            }
+            catch (DbUpdateException dbEx)
+            {
+                throw new ApplicationException($"Database error updating student: {dbEx.InnerException?.Message ?? dbEx.Message}", dbEx);
             }
             catch (Exception ex)
             {
@@ -140,10 +197,22 @@ namespace StuDash
                     throw new ArgumentException($"Student with ID {id} not found.");
                 }
 
-                _students.Remove(student);
-                SaveData();
+                // Option 1: Hard delete (permanently remove)
+                _context.Students.Remove(student);
 
-                return true;
+                // Option 2: Soft delete (mark as inactive - better for audit trail)
+                // student.Status = "Deleted";
+                // student.ModifiedDate = DateTime.Now;
+                // _context.Entry(student).State = EntityState.Modified;
+
+                int rowsAffected = _context.SaveChanges();
+
+                return rowsAffected > 0;
+            }
+            catch (DbUpdateException dbEx)
+            {
+                // Handle foreign key constraints (when we add related tables)
+                throw new ApplicationException($"Cannot delete student: {dbEx.InnerException?.Message ?? dbEx.Message}", dbEx);
             }
             catch (Exception ex)
             {
@@ -156,153 +225,136 @@ namespace StuDash
         #region Search and Filter
 
         /// <summary>
-        /// Search students by various criteria
+        /// Search students by multiple criteria
         /// </summary>
         public List<Student> SearchStudents(string searchTerm)
         {
-            if (string.IsNullOrWhiteSpace(searchTerm))
-                return GetAllStudents();
+            try
+            {
+                if (string.IsNullOrWhiteSpace(searchTerm))
+                    return GetAllStudents();
 
-            searchTerm = searchTerm.ToLower();
+                searchTerm = searchTerm.ToLower();
 
-            return _students.Where(s =>
-                s.StudentID.ToLower().Contains(searchTerm) ||
-                s.FirstName.ToLower().Contains(searchTerm) ||
-                s.LastName.ToLower().Contains(searchTerm) ||
-                s.Email.ToLower().Contains(searchTerm) ||
-                s.Course.ToLower().Contains(searchTerm) ||
-                s.Faculty.ToLower().Contains(searchTerm) ||
-                s.Department.ToLower().Contains(searchTerm)
-            ).ToList();
+                // Using LINQ to build query
+                // EF Core translates this to SQL automatically
+                return _context.Students
+                    .Where(s =>
+                        s.StudentID.ToLower().Contains(searchTerm) ||
+                        s.FirstName.ToLower().Contains(searchTerm) ||
+                        s.LastName.ToLower().Contains(searchTerm) ||
+                        s.Email.ToLower().Contains(searchTerm) ||
+                        s.Course.ToLower().Contains(searchTerm) ||
+                        s.Faculty.ToLower().Contains(searchTerm) ||
+                        s.Department.ToLower().Contains(searchTerm)
+                    )
+                    .OrderBy(s => s.StudentID)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Search failed: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
         /// Get students by faculty
         /// </summary>
-        public List<Student> GetStudentsByFaculty(string faculty)
+        public List<Student> GetStudentsByFaculty(string? faculty)
         {
-            return _students.Where(s => s.Faculty.Equals(faculty, StringComparison.OrdinalIgnoreCase)).ToList();
+            try
+            {
+                return _context.Students
+                    .Where(s => s.Faculty == faculty)
+                    .OrderBy(s => s.StudentID)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to retrieve students by faculty: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
         /// Get students by year level
         /// </summary>
-        public List<Student> GetStudentsByYearLevel(string yearLevel)
-        {
-            return _students.Where(s => s.YearLevel.Equals(yearLevel, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
-
-        #endregion
-
-        #region Data Persistence
-
-        /// <summary>
-        /// Save data to JSON file
-        /// </summary>
-        private void SaveData()
+        public List<Student> GetStudentsByYearLevel(string? yearLevel)
         {
             try
             {
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                };
-
-                string jsonString = JsonSerializer.Serialize(_students, options);
-                File.WriteAllText(_dataFilePath, jsonString);
+                return _context.Students
+                    .Where(s => s.YearLevel == yearLevel)
+                    .OrderBy(s => s.StudentID)
+                    .ToList();
             }
             catch (Exception ex)
             {
-                throw new ApplicationException($"Failed to save data: {ex.Message}", ex);
+                throw new ApplicationException($"Failed to retrieve students by year level: {ex.Message}", ex);
             }
         }
 
         /// <summary>
-        /// Load data from JSON file
+        /// Get students by status
         /// </summary>
-        private void LoadData()
+        public List<Student> GetStudentsByStatus(string? status)
         {
             try
             {
-                if (File.Exists(_dataFilePath))
-                {
-                    string jsonString = File.ReadAllText(_dataFilePath);
-                    if (!string.IsNullOrWhiteSpace(jsonString))
-                    {
-                        var options = new JsonSerializerOptions
-                        {
-                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                            PropertyNameCaseInsensitive = true
-                        };
-
-                        _students = JsonSerializer.Deserialize<List<Student>>(jsonString, options) ?? new List<Student>();
-
-                        // Set the next ID based on existing data
-                        _nextId = _students.Count > 0 ? _students.Max(s => s.ID) + 1 : 1;
-                    }
-                }
-                else
-                {
-                    // Create with sample data for testing
-                    CreateSampleData();
-                }
+                return _context.Students
+                    .Where(s => s.Status == status)
+                    .OrderBy(s => s.StudentID)
+                    .ToList();
             }
             catch (Exception ex)
             {
-                // If loading fails, start with empty list
-                _students = new List<Student>();
-                _nextId = 1;
-
-                // You might want to log this error
-                System.Diagnostics.Debug.WriteLine($"Failed to load data: {ex.Message}");
+                throw new ApplicationException($"Failed to retrieve students by status: {ex.Message}", ex);
             }
         }
 
         /// <summary>
-        /// Create sample data for testing
+        /// Advanced search with multiple filters
         /// </summary>
-        private void CreateSampleData()
+        public List<Student> AdvancedSearch(string? searchTerm = null, string? faculty = null, 
+            string? yearLevel = null, string? status = "Active")
         {
-            var sampleStudents = new List<Student>
+            try
             {
-                new Student
-                {
-                    ID = 1,
-                    StudentID = "FOE.41.008.140.22",
-                    FirstName = "John",
-                    LastName = "Doe",
-                    Email = "john.doe@university.edu",
-                    PhoneNumber = "(555) 123-4567",
-                    DateOfBirth = new DateTime(2002, 5, 15),
-                    Course = "Computer Science",
-                    Faculty = "Engineering",
-                    Department = "Computer Science & Engineering",
-                    YearLevel = "Third Year",
-                    CWA = 3.75,
-                    EnrollmentDate = new DateTime(2022, 9, 1)
-                },
-                new Student
-                {
-                    ID = 2,
-                    StudentID = "FOE.42.009.141.22",
-                    FirstName = "Jane",
-                    LastName = "Smith",
-                    Email = "jane.smith@university.edu",
-                    PhoneNumber = "(555) 987-6543",
-                    DateOfBirth = new DateTime(2001, 8, 22),
-                    Course = "Information Technology",
-                    Faculty = "Engineering",
-                    Department = "Information Technology",
-                    YearLevel = "Fourth Year",
-                    CWA = 3.85,
-                    EnrollmentDate = new DateTime(2021, 9, 1)
-                }
-            };
+                // Start with all students
+                var query = _context.Students.AsQueryable();
 
-            _students = sampleStudents;
-            _nextId = 3;
-            SaveData();
+                // Apply filters conditionally
+                if (!string.IsNullOrWhiteSpace(searchTerm))
+                {
+                    searchTerm = searchTerm.ToLower();
+                    query = query.Where(s =>
+                        s.StudentID.ToLower().Contains(searchTerm) ||
+                        s.FirstName.ToLower().Contains(searchTerm) ||
+                        s.LastName.ToLower().Contains(searchTerm) ||
+                        s.Email.ToLower().Contains(searchTerm)
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(faculty))
+                {
+                    query = query.Where(s => s.Faculty == faculty);
+                }
+
+                if (!string.IsNullOrWhiteSpace(yearLevel))
+                {
+                    query = query.Where(s => s.YearLevel == yearLevel);
+                }
+
+                if (!string.IsNullOrWhiteSpace(status))
+                {
+                    query = query.Where(s => s.Status == status);
+                }
+
+                return query.OrderBy(s => s.StudentID).ToList();
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Advanced search failed: {ex.Message}", ex);
+            }
         }
 
         #endregion
@@ -310,19 +362,51 @@ namespace StuDash
         #region Statistics
 
         /// <summary>
-        /// Get total number of students
+        /// Get total student count
         /// </summary>
         public int GetTotalStudentCount()
         {
-            return _students.Count;
+            try
+            {
+                return _context.Students.Count();
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to count students: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Get active student count
+        /// </summary>
+        public int GetActiveStudentCount()
+        {
+            try
+            {
+                return _context.Students.Count(s => s.Status == "Active");
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to count active students: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
         /// Get average CWA
         /// </summary>
-        public double GetAverageCWA()
+        public decimal GetAverageCWA()
         {
-            return _students.Count > 0 ? _students.Average(s => s.CWA) : 0.0;
+            try
+            {
+                var count = _context.Students.Count();
+                if (count == 0) return 0;
+
+                return _context.Students.Average(s => s.CWA);
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to calculate average CWA: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
@@ -330,8 +414,45 @@ namespace StuDash
         /// </summary>
         public Dictionary<string, int> GetStudentCountByFaculty()
         {
-            return _students.GroupBy(s => s.Faculty)
-                           .ToDictionary(g => g.Key, g => g.Count());
+            try
+            {
+                return _context.Students
+                    .GroupBy(s => s.Faculty)
+                    .ToDictionary(g => g.Key, g => g.Count());
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to group students by faculty: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Get students grouped by year level
+        /// </summary>
+        public Dictionary<string, int> GetStudentCountByYearLevel()
+        {
+            try
+            {
+                return _context.Students
+                    .GroupBy(s => s.YearLevel)
+                    .ToDictionary(g => g.Key, g => g.Count());
+            }
+            catch (Exception ex)
+            {
+                throw new ApplicationException($"Failed to group students by year level: {ex.Message}", ex);
+            }
+        }
+
+        #endregion
+
+        #region Cleanup
+
+        /// <summary>
+        /// Dispose of database context (important for preventing memory leaks)
+        /// </summary>
+        public void Dispose()
+        {
+            _context?.Dispose();
         }
 
         #endregion

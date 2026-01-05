@@ -1,4 +1,3 @@
-
 using System.ComponentModel;
 using System.Windows.Forms;
 
@@ -6,8 +5,8 @@ namespace StuDash
 {
     public partial class MainForm : Form
     {
-        private StudentService _studentService;
-        private Student _currentStudent;
+        private StudentService? _studentService;
+        private Student? _currentStudent;
         private bool _isEditing;
 
         public MainForm()
@@ -20,6 +19,8 @@ namespace StuDash
         {
             // Initialize service
             _studentService = new StudentService();
+
+            
 
             // Configure DataGridView
             ConfigureDataGridView();
@@ -156,7 +157,7 @@ namespace StuDash
             cmbFaculty.SelectedIndexChanged += CmbFaculty_SelectedIndexChanged;
         }
 
-        private void CmbFaculty_SelectedIndexChanged(object sender, EventArgs e)
+        private void CmbFaculty_SelectedIndexChanged(object? sender, EventArgs e)
         {
             // Update department based on faculty selection
             cmbDepartment.Items.Clear();
@@ -209,7 +210,10 @@ namespace StuDash
         {
             cmbCourse.Items.Clear();
 
-            string department = cmbDepartment.SelectedItem?.ToString();
+            string? department = cmbDepartment.SelectedItem?.ToString();
+
+            if (string.IsNullOrEmpty(department))
+                return;
 
             switch (department)
             {
@@ -233,12 +237,8 @@ namespace StuDash
                     break;
 
                 default:
-                    // Add generic course based on department name
-                    if (!string.IsNullOrEmpty(department))
-                    {
-                        cmbCourse.Items.Add($"Bachelor of {department}");
-                        cmbCourse.Items.Add($"Master of {department}");
-                    }
+                    cmbCourse.Items.Add($"Bachelor of {department}");
+                    cmbCourse.Items.Add($"Master of {department}");
                     break;
             }
         }
@@ -251,7 +251,7 @@ namespace StuDash
         {
             try
             {
-                var students = _studentService.GetAllStudents();
+                var students = _studentService?.GetAllStudents() ?? new List<Student>();
                 dgvStudents.DataSource = new BindingList<Student>(students);
 
                 // Update status
@@ -266,7 +266,7 @@ namespace StuDash
 
         private void UpdateStatusBar()
         {
-            int totalStudents = _studentService.GetTotalStudentCount();
+            int totalStudents = _studentService?.GetTotalStudentCount() ?? 0;
             // Assuming your status strip has labels named toolStripStatusLabel1 and toolStripStatusLabel2
             // Update these names to match your actual status strip labels
             if (statusStrip1.Items.Count > 0)
@@ -283,7 +283,7 @@ namespace StuDash
 
         #region Event Handlers
 
-        private void DgvStudents_SelectionChanged(object sender, EventArgs e)
+        private void DgvStudents_SelectionChanged(object? sender, EventArgs e)
         {
             if (dgvStudents.SelectedRows.Count > 0)
             {
@@ -351,7 +351,7 @@ namespace StuDash
                 {
                     try
                     {
-                        _studentService.DeleteStudent(selectedStudent.ID);
+                        _studentService?.DeleteStudent(selectedStudent.ID);
                         RefreshStudentList();
                         ClearForm();
                         MessageBox.Show("Student deleted successfully!", "Success",
@@ -371,7 +371,7 @@ namespace StuDash
             try
             {
                 string searchTerm = txtSearch.Text.Trim();
-                var searchResults = _studentService.SearchStudents(searchTerm);
+                var searchResults = _studentService?.SearchStudents(searchTerm) ?? new List<Student>();
                 dgvStudents.DataSource = new BindingList<Student>(searchResults);
 
                 // Update status to show search results
@@ -404,22 +404,25 @@ namespace StuDash
                     // Get data from form
                     PopulateStudentFromForm();
 
-                    if (_isEditing)
+                    if (_currentStudent != null && _studentService != null)
                     {
-                        _studentService.UpdateStudent(_currentStudent);
-                        MessageBox.Show("Student updated successfully!", "Success",
-                                       MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        _studentService.AddStudent(_currentStudent);
-                        MessageBox.Show("Student added successfully!", "Success",
-                                       MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
+                        if (_isEditing)
+                        {
+                            _studentService.UpdateStudent(_currentStudent);
+                            MessageBox.Show("Student updated successfully!", "Success",
+                                           MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else
+                        {
+                            _studentService.AddStudent(_currentStudent);
+                            MessageBox.Show("Student added successfully!", "Success",
+                                           MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
 
-                    RefreshStudentList();
-                    ClearForm();
-                    SetFormEnabled(false);
+                        RefreshStudentList();
+                        ClearForm();
+                        SetFormEnabled(false);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -475,7 +478,7 @@ namespace StuDash
             cmbDepartment.SelectedItem = student.Department;
             cmbCourse.SelectedItem = student.Course;
             cmbYearLevel.SelectedItem = student.YearLevel;
-            nudCWA.Value = (decimal)student.CWA;
+            nudCWA.Value = student.CWA;
             dtpEnrollmentDate.Value = student.EnrollmentDate;
         }
 
@@ -494,7 +497,7 @@ namespace StuDash
             _currentStudent.Department = cmbDepartment.SelectedItem?.ToString() ?? "";
             _currentStudent.Course = cmbCourse.SelectedItem?.ToString() ?? "";
             _currentStudent.YearLevel = cmbYearLevel.SelectedItem?.ToString() ?? "";
-            _currentStudent.CWA = (double)nudCWA.Value;
+            _currentStudent.CWA = nudCWA.Value;
             _currentStudent.EnrollmentDate = dtpEnrollmentDate.Value;
         }
 
