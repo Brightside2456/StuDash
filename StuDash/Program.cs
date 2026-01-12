@@ -13,7 +13,7 @@ namespace StuDash
             Application.SetCompatibleTextRenderingDefault(false);
 
             // Run database test first -- THis one works
-            DatabaseTest.TestDatabaseConnection();
+            // DatabaseTest.TestDatabaseConnection();
             // To customize application configuration such as set high DPI settings or default font,
             // see https://aka.ms/applicationconfiguration.
             ApplicationConfiguration.Initialize();
